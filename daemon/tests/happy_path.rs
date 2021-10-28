@@ -5,7 +5,7 @@ use cfd_protocol::secp256k1_zkp::{schnorrsig, Secp256k1};
 use cfd_protocol::PartyParams;
 use daemon::maker_cfd::CfdAction;
 use daemon::model::cfd::{Cfd, CfdState, Order};
-use daemon::model::{Price, Timestamp, Usd, WalletInfo};
+use daemon::model::{Price, Timestamp, Usd, WalletInfo, BitMexPriceEventId};
 use daemon::tokio_ext::FutureExt;
 use daemon::{
     connection, db, maker_cfd, maker_inc_connections, monitor, oracle, taker_cfd, wallet,
@@ -24,6 +24,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use xtra::spawn::TokioGlobalSpawnExt;
 use xtra_productivity::xtra_productivity;
+use daemon::oracle::Announcement;
+use time::OffsetDateTime;
+use std::ops::Deref;
 
 #[tokio::test]
 async fn taker_receives_order_from_maker_on_publication() {
@@ -77,6 +80,30 @@ async fn taker_takes_order_and_maker_rejects() {
     assert_eq!(maker_cfd.order.id, received.id);
     assert!(matches!(taker_cfd.state, CfdState::Rejected { .. }));
     assert!(matches!(maker_cfd.state, CfdState::Rejected { .. }));
+}
+
+#[tokio::test]
+async fn taker_takes_order_and_maker_accepts_and_contract_setup() {
+    let _guard = init_tracing();
+    let (mut maker, mut taker) = TestBuilder::stubbed().with_taker_oracle(OracleThatReturnsAnnouncement).build().await;
+
+    is_next_none(&mut taker.order_feed).await;
+
+    maker.publish_order(new_dummy_order());
+
+    let (_, received) = next_order(&mut maker.order_feed, &mut taker.order_feed).await;
+
+    taker.take_order(received.clone(), Usd::new(dec!(10)));
+    let (_, _) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+
+    maker.accept_take_request(received.clone());
+
+    let (taker_cfd, maker_cfd) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    // TODO: More elaborate Cfd assertions
+    assert_eq!(taker_cfd.order.id, received.id);
+    assert_eq!(maker_cfd.order.id, received.id);
+    assert!(matches!(taker_cfd.state, CfdState::Accepted { .. }));
+    assert!(matches!(maker_cfd.state, CfdState::Accepted { .. }));
 }
 
 fn new_dummy_order() -> maker_cfd::NewOrder {
@@ -141,7 +168,7 @@ where
     T: Clone,
 {
     rx.changed()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .await
         .context("Waiting for next element in channel is taking too long, aborting")
         .unwrap()
@@ -185,6 +212,29 @@ impl Oracle {
         _msg: oracle::GetAnnouncement,
     ) -> Option<oracle::Announcement> {
         todo!("stub this if needed")
+    }
+
+    async fn handle(&mut self, _msg: oracle::MonitorAttestation) {
+        todo!("stub this if needed")
+    }
+
+    async fn handle(&mut self, _msg: oracle::Sync) {}
+}
+
+struct OracleThatReturnsAnnouncement;
+impl xtra::Actor for OracleThatReturnsAnnouncement {}
+
+#[xtra_productivity(message_impl = false)]
+impl OracleThatReturnsAnnouncement {
+    async fn handle_get_announcement(
+        &mut self,
+        _msg: oracle::GetAnnouncement,
+    ) -> Option<oracle::Announcement> {
+        Some(Announcement {
+            id: BitMexPriceEventId::new(OffsetDateTime::UNIX_EPOCH, 0),
+            expected_outcome_time: OffsetDateTime::UNIX_EPOCH,
+            nonce_pks: vec![]
+        })
     }
 
     async fn handle(&mut self, _msg: oracle::MonitorAttestation) {
@@ -323,6 +373,12 @@ where
             .do_send(CfdAction::RejectOrder { order_id: order.id })
             .unwrap();
     }
+
+    fn accept_take_request(&self, order: Order) {
+        self.cfd_actor_addr
+            .do_send(CfdAction::AcceptOrder { order_id: order.id })
+            .unwrap();
+    }
 }
 
 /// Taker Test Setup
@@ -394,27 +450,15 @@ where
     }
 }
 
-pub struct TestBuilder<O, M, W> {
-    taker_oracle: O,
-    taker_monitor: M,
-    taker_wallet: W,
 
-    maker_oracle: O,
-    maker_monitor: M,
-    maker_wallet: W,
-}
+pub struct TestBuilder<O, M, G> {
+    taker_oracle: Box<O>,
+    taker_monitor: Box<M>,
+    taker_wallet: Box<G>,
 
-impl TestBuilder<Oracle, Monitor, Wallet> {
-    fn stubbed() -> Self {
-        Self {
-            taker_oracle: Oracle,
-            taker_monitor: Monitor,
-            taker_wallet: Wallet,
-            maker_oracle: Oracle,
-            maker_monitor: Monitor,
-            maker_wallet: Wallet,
-        }
-    }
+    maker_oracle: Box<O>,
+    maker_monitor: Box<M>,
+    maker_wallet: Box<G>,
 }
 
 impl<O, M, W> TestBuilder<O, M, W>
@@ -431,6 +475,18 @@ where
         + xtra::Handler<wallet::Sign>
         + xtra::Handler<wallet::TryBroadcastTransaction>,
 {
+    fn stubbed() -> Self {
+        Self {
+            taker_oracle: Box::new(Oracle),
+            taker_monitor: Box::new(Monitor),
+            taker_wallet: Box::new(Wallet),
+            maker_oracle: Box::new(Oracle),
+            maker_monitor: Box::new(Monitor),
+            maker_wallet: Box::new(Wallet),
+        }
+    }
+
+
     async fn build(self) -> (Maker<O, M, W>, Taker<O, M, W>) {
         let oracle_pk: schnorrsig::PublicKey = schnorrsig::PublicKey::from_str(
             "ddd4636845a90185991826be5a494cde9f4a6947b1727217afedc6292fa4caf7",
@@ -439,20 +495,25 @@ where
 
         let maker = Maker::start(
             oracle_pk,
-            self.maker_oracle,
-            self.maker_monitor,
-            self.maker_wallet,
+            self.maker_oracle.deref().clone(),
+            self.maker_monitor.deref().clone(),
+            self.maker_wallet.deref().clone(),
         )
         .await;
         let taker = Taker::start(
             oracle_pk,
             maker.listen_addr,
-            self.taker_oracle,
-            self.taker_monitor,
-            self.taker_wallet,
+            self.taker_oracle.deref().clone(),
+            self.taker_monitor.deref().clone(),
+            self.taker_wallet.deref().clone(),
         )
         .await;
         (maker, taker)
+    }
+
+    async fn with_taker_oracle(mut self, oracle: O) -> Self<O, M, W> {
+        self.taker_oracle = oracle;
+        self
     }
 }
 
