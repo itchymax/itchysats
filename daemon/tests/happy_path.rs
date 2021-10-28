@@ -23,13 +23,12 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use xtra::spawn::TokioGlobalSpawnExt;
-use xtra::Actor;
 use xtra_productivity::xtra_productivity;
 
 #[tokio::test]
 async fn taker_receives_order_from_maker_on_publication() {
     let _guard = init_tracing();
-    let (mut maker, mut taker) = start_both().await;
+    let (mut maker, mut taker) = TestBuilder::stubbed().build().await;
 
     assert!(is_next_none(&mut taker.order_feed).await);
 
@@ -47,7 +46,7 @@ async fn taker_receives_order_from_maker_on_publication() {
 #[tokio::test]
 async fn taker_takes_order_and_maker_rejects() {
     let _guard = init_tracing();
-    let (mut maker, mut taker) = start_both().await;
+    let (mut maker, mut taker) = TestBuilder::stubbed().build().await;
 
     // TODO: Why is this needed? For the cfd stream it is not needed
     is_next_none(&mut taker.order_feed).await;
@@ -246,9 +245,8 @@ impl Wallet {
 
 /// Maker Test Setup
 #[derive(Clone)]
-struct Maker {
-    cfd_actor_addr:
-        xtra::Address<maker_cfd::Actor<Oracle, Monitor, maker_inc_connections::Actor, Wallet>>,
+struct Maker<O, M, W> {
+    cfd_actor_addr: xtra::Address<maker_cfd::Actor<O, M, maker_inc_connections::Actor, W>>,
     order_feed: watch::Receiver<Option<Order>>,
     cfd_feed: watch::Receiver<Vec<Cfd>>,
     #[allow(dead_code)] // we need to keep the xtra::Address for refcounting
@@ -256,11 +254,24 @@ struct Maker {
     listen_addr: SocketAddr,
 }
 
-impl Maker {
-    async fn start(oracle_pk: schnorrsig::PublicKey) -> Self {
+impl<O, M, W> Maker<O, M, W>
+where
+    O: xtra::Handler<oracle::MonitorAttestation>
+        + xtra::Handler<oracle::GetAnnouncement>
+        + xtra::Handler<oracle::Sync>,
+    M: xtra::Handler<monitor::StartMonitoring>
+        + xtra::Handler<monitor::Sync>
+        + xtra::Handler<monitor::CollaborativeSettlement>
+        + xtra::Handler<oracle::Attestation>,
+    W: xtra::Handler<wallet::BuildPartyParams>
+        + xtra::Handler<wallet::Sync>
+        + xtra::Handler<wallet::Sign>
+        + xtra::Handler<wallet::TryBroadcastTransaction>,
+{
+    async fn start(oracle_pk: schnorrsig::PublicKey, oracle: O, monitor: M, wallet: W) -> Self {
         let db = in_memory_db().await;
 
-        let wallet_addr = Wallet {}.create(None).spawn_global();
+        let wallet_addr = wallet.create(None).spawn_global();
 
         let settlement_time_interval_hours = time::Duration::hours(24);
 
@@ -268,8 +279,8 @@ impl Maker {
             db,
             wallet_addr,
             oracle_pk,
-            |_, _| Oracle,
-            |_, _| async { Ok(Monitor) },
+            |_, _| oracle,
+            |_, _| async { Ok(monitor) },
             |channel0, channel1| maker_inc_connections::Actor::new(channel0, channel1),
             settlement_time_interval_hours,
         )
@@ -316,14 +327,33 @@ impl Maker {
 
 /// Taker Test Setup
 #[derive(Clone)]
-struct Taker {
+struct Taker<O, M, W> {
     order_feed: watch::Receiver<Option<Order>>,
     cfd_feed: watch::Receiver<Vec<Cfd>>,
-    cfd_actor_addr: xtra::Address<taker_cfd::Actor<Oracle, Monitor, Wallet>>,
+    cfd_actor_addr: xtra::Address<taker_cfd::Actor<O, M, W>>,
 }
 
-impl Taker {
-    async fn start(oracle_pk: schnorrsig::PublicKey, maker_address: SocketAddr) -> Self {
+impl<O, M, W> Taker<O, M, W>
+where
+    O: xtra::Handler<oracle::MonitorAttestation>
+        + xtra::Handler<oracle::GetAnnouncement>
+        + xtra::Handler<oracle::Sync>,
+    M: xtra::Handler<monitor::StartMonitoring>
+        + xtra::Handler<monitor::Sync>
+        + xtra::Handler<monitor::CollaborativeSettlement>
+        + xtra::Handler<oracle::Attestation>,
+    W: xtra::Handler<wallet::BuildPartyParams>
+        + xtra::Handler<wallet::Sync>
+        + xtra::Handler<wallet::Sign>
+        + xtra::Handler<wallet::TryBroadcastTransaction>,
+{
+    async fn start(
+        oracle_pk: schnorrsig::PublicKey,
+        maker_address: SocketAddr,
+        oracle: O,
+        monitor: M,
+        wallet: W,
+    ) -> Self {
         let connection::Actor {
             send_to_maker,
             read_from_maker,
@@ -333,7 +363,7 @@ impl Taker {
 
         let db = in_memory_db().await;
 
-        let wallet_addr = Wallet {}.create(None).spawn_global();
+        let wallet_addr = wallet.create(None).spawn_global();
 
         let taker = daemon::TakerActorSystem::new(
             db,
@@ -341,8 +371,8 @@ impl Taker {
             oracle_pk,
             send_to_maker,
             read_from_maker,
-            |_, _| Oracle,
-            |_, _| async { Ok(Monitor) },
+            |_, _| oracle,
+            |_, _| async { Ok(monitor) },
         )
         .await
         .unwrap();
@@ -364,15 +394,66 @@ impl Taker {
     }
 }
 
-async fn start_both() -> (Maker, Taker) {
-    let oracle_pk: schnorrsig::PublicKey = schnorrsig::PublicKey::from_str(
-        "ddd4636845a90185991826be5a494cde9f4a6947b1727217afedc6292fa4caf7",
-    )
-    .unwrap();
+pub struct TestBuilder<O, M, W> {
+    taker_oracle: O,
+    taker_monitor: M,
+    taker_wallet: W,
 
-    let maker = Maker::start(oracle_pk).await;
-    let taker = Taker::start(oracle_pk, maker.listen_addr).await;
-    (maker, taker)
+    maker_oracle: O,
+    maker_monitor: M,
+    maker_wallet: W,
+}
+
+impl TestBuilder<Oracle, Monitor, Wallet> {
+    fn stubbed() -> Self {
+        Self {
+            taker_oracle: Oracle,
+            taker_monitor: Monitor,
+            taker_wallet: Wallet,
+            maker_oracle: Oracle,
+            maker_monitor: Monitor,
+            maker_wallet: Wallet,
+        }
+    }
+}
+
+impl<O, M, W> TestBuilder<O, M, W>
+where
+    O: xtra::Handler<oracle::MonitorAttestation>
+        + xtra::Handler<oracle::GetAnnouncement>
+        + xtra::Handler<oracle::Sync>,
+    M: xtra::Handler<monitor::StartMonitoring>
+        + xtra::Handler<monitor::Sync>
+        + xtra::Handler<monitor::CollaborativeSettlement>
+        + xtra::Handler<oracle::Attestation>,
+    W: xtra::Handler<wallet::BuildPartyParams>
+        + xtra::Handler<wallet::Sync>
+        + xtra::Handler<wallet::Sign>
+        + xtra::Handler<wallet::TryBroadcastTransaction>,
+{
+    async fn build(self) -> (Maker<O, M, W>, Taker<O, M, W>) {
+        let oracle_pk: schnorrsig::PublicKey = schnorrsig::PublicKey::from_str(
+            "ddd4636845a90185991826be5a494cde9f4a6947b1727217afedc6292fa4caf7",
+        )
+        .unwrap();
+
+        let maker = Maker::start(
+            oracle_pk,
+            self.maker_oracle,
+            self.maker_monitor,
+            self.maker_wallet,
+        )
+        .await;
+        let taker = Taker::start(
+            oracle_pk,
+            maker.listen_addr,
+            self.taker_oracle,
+            self.taker_monitor,
+            self.taker_wallet,
+        )
+        .await;
+        (maker, taker)
+    }
 }
 
 async fn in_memory_db() -> SqlitePool {
