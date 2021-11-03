@@ -44,7 +44,7 @@ jobs:
       - name: Create pull request
         run: |
           # Force push to allow for easier re-runs of the action
-          git push origin ${{ env.RELEASE_BRANCH }} --force
+          git push --set-upstream origin ${{ env.RELEASE_BRANCH }} --force
           # Use heredoc to define multiline string: https://stackoverflow.com/a/23930212/2489334
           BODY=$(cat <<-EOF
           Hi @${{ github.actor }}!
