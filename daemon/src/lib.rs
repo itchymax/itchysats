@@ -174,6 +174,7 @@ where
         + xtra::Handler<wallet::Sign>
         + xtra::Handler<wallet::TryBroadcastTransaction>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new<F>(
         db: SqlitePool,
         wallet_addr: Address<W>,
@@ -182,6 +183,7 @@ where
         read_from_maker: Box<dyn Stream<Item = taker_cfd::MakerStreamMessage> + Unpin + Send>,
         oracle_constructor: impl FnOnce(Vec<Cfd>, Box<dyn StrongMessageChannel<Attestation>>) -> O,
         monitor_constructor: impl FnOnce(Box<dyn StrongMessageChannel<monitor::Event>>, Vec<Cfd>) -> F,
+        settlement_interval: time::Duration,
     ) -> Result<Self>
     where
         F: Future<Output = Result<M>>,
@@ -197,8 +199,15 @@ where
 
         let (monitor_addr, mut monitor_ctx) = xtra::Context::new(None);
         let (oracle_addr, mut oracle_ctx) = xtra::Context::new(None);
+        let (cfd_actor_addr, mut cfd_context) = xtra::Context::new(None);
 
-        let cfd_actor_addr = taker_cfd::Actor::new(
+        tokio::spawn(
+            cfd_context
+                .notify_interval(Duration::from_secs(60 * 60), || taker_cfd::AutoRollover)
+                .map_err(|e| anyhow::anyhow!(e))?,
+        );
+
+        tokio::spawn(cfd_context.run(taker_cfd::Actor::new(
             db,
             wallet_addr,
             oracle_pk,
@@ -208,9 +217,8 @@ where
             send_to_maker,
             monitor_addr.clone(),
             oracle_addr,
-        )
-        .create(None)
-        .spawn_global();
+            settlement_interval,
+        )));
 
         tokio::spawn(cfd_actor_addr.clone().attach_stream(read_from_maker));
 
@@ -235,6 +243,12 @@ where
             .spawn_global();
 
         tokio::spawn(oracle_ctx.run(oracle_constructor(cfds, Box::new(fan_out_actor))));
+
+        // TODO: Optimize initial auto-rollover to take time into account so that we don't want to
+        // trigger auto-rollover after an immediate restart
+        cfd_actor_addr
+            .do_send_async(taker_cfd::AutoRollover)
+            .await?;
 
         Ok(Self {
             cfd_actor_addr,

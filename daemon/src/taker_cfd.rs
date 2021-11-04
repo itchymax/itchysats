@@ -1,5 +1,5 @@
 use crate::cfd_actors::{self, append_cfd_state, insert_cfd};
-use crate::db::{insert_order, load_cfd_by_order_id, load_order_by_id};
+use crate::db::{insert_order, load_all_cfds, load_cfd_by_order_id, load_order_by_id};
 use crate::model::cfd::{
     Cfd, CfdState, CfdStateChangeEvent, CfdStateCommon, CollaborativeSettlement, Dlc, Order,
     OrderId, Origin, Role, RollOverProposal, SettlementKind, SettlementProposal, UpdateCfdProposal,
@@ -8,13 +8,14 @@ use crate::model::cfd::{
 use crate::model::{BitMexPriceEventId, Price, Timestamp, Usd};
 use crate::monitor::{self, MonitorParams};
 use crate::wire::{MakerToTaker, RollOverMsg, SetupMsg};
-use crate::{log_error, oracle, setup_contract, wallet, wire};
+use crate::{log_error, oracle, setup_contract, try_continue, wallet, wire};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use bdk::bitcoin::secp256k1::schnorrsig;
 use futures::channel::mpsc;
 use futures::{future, SinkExt};
 use std::collections::HashMap;
+use time::{Duration, OffsetDateTime};
 use tokio::sync::watch;
 use xtra::prelude::*;
 use xtra::KeepRunning;
@@ -28,9 +29,6 @@ pub enum CfdAction {
     ProposeSettlement {
         order_id: OrderId,
         current_price: Price,
-    },
-    ProposeRollOver {
-        order_id: OrderId,
     },
     Commit {
         order_id: OrderId,
@@ -50,6 +48,8 @@ pub struct CfdRollOverCompleted {
     pub order_id: OrderId,
     pub dlc: Result<Dlc>,
 }
+
+pub struct AutoRollover;
 
 enum SetupState {
     Active {
@@ -78,6 +78,7 @@ pub struct Actor<O, M, W> {
     roll_over_state: RollOverState,
     oracle_actor: Address<O>,
     current_pending_proposals: UpdateCfdProposals,
+    settlement_interval: Duration,
 }
 
 impl<O, M, W> Actor<O, M, W>
@@ -98,6 +99,7 @@ where
         send_to_maker: Box<dyn MessageChannel<wire::TakerToMaker>>,
         monitor_actor: Address<M>,
         oracle_actor: Address<O>,
+        settlement_interval: Duration,
     ) -> Self {
         Self {
             db,
@@ -112,6 +114,7 @@ where
             roll_over_state: RollOverState::None,
             oracle_actor,
             current_pending_proposals: HashMap::new(),
+            settlement_interval,
         }
     }
 }
@@ -171,7 +174,33 @@ impl<O, M, W> Actor<O, M, W> {
         Ok(())
     }
 
-    async fn handle_propose_roll_over(&mut self, order_id: OrderId) -> Result<()> {
+    async fn handle_auto_rollover(&mut self) -> Result<()> {
+        tracing::debug!("Auto rollover");
+
+        let mut conn = self.db.acquire().await?;
+        let cfds = load_all_cfds(&mut conn).await?;
+
+        // cleanup all pending proposals because auto-rollover will create a new one
+        self.current_pending_proposals.clear();
+
+        // Only cfds in state `Open` are allowed for auto-rollover proposal
+        for cfd in cfds
+            .iter()
+            .filter(|cfd| matches!(cfd.state, CfdState::Open { .. }))
+        {
+            let now = OffsetDateTime::now_utc();
+            let until_expiry = now - cfd.expiry_timestamp();
+            let roll_over_window = self.settlement_interval - Duration::hours(1);
+
+            if until_expiry <= roll_over_window && until_expiry > Duration::ZERO {
+                try_continue!(self.propose_roll_over(cfd.order.id).await)
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn propose_roll_over(&mut self, order_id: OrderId) -> Result<()> {
         if self.current_pending_proposals.contains_key(&order_id) {
             anyhow::bail!("An update for order id {} is already in progress", order_id)
         }
@@ -686,12 +715,18 @@ where
                 self.handle_propose_settlement(order_id, current_price)
                     .await
             }
-            ProposeRollOver { order_id } => self.handle_propose_roll_over(order_id).await,
         } {
             tracing::error!("Message handler failed: {:#}", e);
             anyhow::bail!(e)
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<O: 'static, M: 'static, W: 'static> Handler<AutoRollover> for Actor<O, M, W> {
+    async fn handle(&mut self, _msg: AutoRollover, _ctx: &mut Context<Self>) {
+        log_error!(self.handle_auto_rollover())
     }
 }
 
@@ -818,6 +853,10 @@ impl Message for CfdSetupCompleted {
 }
 
 impl Message for CfdRollOverCompleted {
+    type Result = ();
+}
+
+impl Message for AutoRollover {
     type Result = ();
 }
 

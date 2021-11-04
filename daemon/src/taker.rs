@@ -248,6 +248,7 @@ async fn main() -> Result<()> {
                 monitor::Actor::new(electrum, channel, cfds)
             }
         },
+        SETTLEMENT_INTERVAL,
     )
     .await?;
 

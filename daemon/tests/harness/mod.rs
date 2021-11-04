@@ -182,6 +182,8 @@ impl Taker {
 
         let wallet_addr = wallet.create(None).spawn_global();
 
+        let settlement_time_interval_hours = time::Duration::hours(24);
+
         let taker = daemon::TakerActorSystem::new(
             db,
             wallet_addr,
@@ -190,6 +192,7 @@ impl Taker {
             read_from_maker,
             |_, _| oracle,
             |_, _| async { Ok(monitor) },
+            settlement_time_interval_hours,
         )
         .await
         .unwrap();
