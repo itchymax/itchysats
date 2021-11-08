@@ -368,11 +368,16 @@ where
         );
         self.send_pending_update_proposals()?;
 
+        dbg!("update cfd feed for UI");
+
         self.send_to_maker
             .do_send(wire::TakerToMaker::ProposeRollOver {
                 order_id: proposal.order_id,
                 timestamp: proposal.timestamp,
             })?;
+        dbg!("sent roll over proposals to maker");
+
+
         Ok(())
     }
 }

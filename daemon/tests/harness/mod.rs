@@ -3,7 +3,7 @@ use crate::harness::mocks::oracle::OracleActor;
 use crate::harness::mocks::wallet::WalletActor;
 use crate::schnorrsig;
 use daemon::maker_cfd::CfdAction;
-use daemon::model::cfd::{Cfd, Order};
+use daemon::model::cfd::{Cfd, Order, OrderId};
 use daemon::model::Usd;
 use daemon::seed::Seed;
 use daemon::{connection, db, maker_cfd, maker_inc_connections, taker_cfd};
@@ -117,15 +117,27 @@ impl Maker {
             .unwrap();
     }
 
-    pub fn reject_take_request(&self, order: Order) {
+    pub async fn reject_take_request(&self, order: Order) {
         self.cfd_actor_addr
-            .do_send(CfdAction::RejectOrder { order_id: order.id })
+            .send(CfdAction::RejectOrder { order_id: order.id })
+            .await
+            .unwrap()
             .unwrap();
     }
 
-    pub fn accept_take_request(&self, order: Order) {
+    pub async fn accept_take_request(&self, order: Order) {
         self.cfd_actor_addr
-            .do_send(CfdAction::AcceptOrder { order_id: order.id })
+            .send(CfdAction::AcceptOrder { order_id: order.id })
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    pub async fn accept_rollover(&self, order: Order) {
+        self.cfd_actor_addr
+            .send(CfdAction::AcceptRollOver { order_id: order.id })
+            .await
+            .unwrap()
             .unwrap();
     }
 }
@@ -187,13 +199,24 @@ impl Taker {
         }
     }
 
-    pub fn take_order(&self, order: Order, quantity: Usd) {
+    pub async fn take_order(&self, order: Order, quantity: Usd) {
         self.cfd_actor_addr
-            .do_send(taker_cfd::TakeOffer {
+            .send(taker_cfd::TakeOffer {
                 order_id: order.id,
                 quantity,
             })
+            .await
+            .unwrap()
             .unwrap();
+    }
+
+    pub async fn propose_rollover(&self, order_id: OrderId) {
+        dbg!("proposing rollover");
+        self.cfd_actor_addr
+            .send(taker_cfd::CfdAction::ProposeRollOver { order_id })
+            .await
+            .expect("foo")
+            .expect("bar");
     }
 }
 

@@ -3,7 +3,7 @@ use crate::harness::mocks::oracle::dummy_announcement;
 use crate::harness::mocks::wallet::build_party_params;
 use crate::harness::start_both;
 use anyhow::Context;
-use daemon::maker_cfd;
+use daemon::{maker_cfd, monitor};
 use daemon::model::cfd::{Cfd, CfdState, Order, Origin};
 use daemon::model::{Price, Usd};
 use daemon::tokio_ext::FutureExt;
@@ -16,6 +16,7 @@ use tracing::subscriber::DefaultGuard;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
 mod harness;
 
 #[tokio::test]
@@ -47,7 +48,7 @@ async fn taker_takes_order_and_maker_rejects() {
 
     let (_, received) = next_order(&mut maker.order_feed, &mut taker.order_feed).await;
 
-    taker.take_order(received.clone(), Usd::new(dec!(10)));
+    taker.take_order(received.clone(), Usd::new(dec!(10))).await;
 
     let (taker_cfd, maker_cfd) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
     assert_is_same_order(&taker_cfd.order, &received);
@@ -61,7 +62,7 @@ async fn taker_takes_order_and_maker_rejects() {
         CfdState::IncomingOrderRequest { .. }
     ));
 
-    maker.reject_take_request(received.clone());
+    maker.reject_take_request(received.clone()).await;
 
     let (taker_cfd, maker_cfd) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
     // TODO: More elaborate Cfd assertions
@@ -70,6 +71,142 @@ async fn taker_takes_order_and_maker_rejects() {
     assert!(matches!(taker_cfd.state, CfdState::Rejected { .. }));
     assert!(matches!(maker_cfd.state, CfdState::Rejected { .. }));
 }
+
+#[tokio::test]
+async fn taker_proposes_rollover_and_maker_accepts_rollover() {
+    let _guard = init_tracing();
+    let (mut maker, mut taker) = start_both().await;
+
+    maker
+        .mocks
+        .oracle()
+        .await
+        .expect_get_announcement()
+        .returning(|_| Some(dummy_announcement()));
+
+    taker
+        .mocks
+        .oracle()
+        .await
+        .expect_get_announcement()
+        .returning(|_| Some(dummy_announcement()));
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        maker
+        .mocks
+        .wallet()
+        .await
+        .expect_build_party_params()
+        .returning(|msg| build_party_params(msg));
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        taker
+        .mocks
+        .wallet()
+        .await
+        .expect_build_party_params()
+        .returning(|msg| build_party_params(msg));
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        maker
+        .mocks
+        .oracle()
+        .await
+        .expect_monitor_attestation()
+        .return_const(());
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        taker
+        .mocks
+        .oracle()
+        .await
+        .expect_monitor_attestation()
+        .return_const(());
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        maker
+        .mocks
+        .monitor()
+        .await
+        .expect_start_monitoring()
+        .return_const(());
+
+    #[allow(clippy::redundant_closure)] // clippy is in the wrong here
+        taker
+        .mocks
+        .monitor()
+        .await
+        .expect_start_monitoring()
+        .return_const(());
+
+
+    is_next_none(&mut taker.order_feed).await;
+
+    maker.publish_order(dummy_new_order()).await;
+
+    let (_, received) = next_order(&mut maker.order_feed, &mut taker.order_feed).await;
+
+    taker.take_order(received.clone(), Usd::new(dec!(5))).await;
+    let (_, _) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+
+    maker.accept_take_request(received.clone()).await;
+
+    let (taker_cfd, maker_cfd) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    // TODO: More elaborate Cfd assertions
+    assert_eq!(taker_cfd.order.id, received.id);
+    assert_eq!(maker_cfd.order.id, received.id);
+    assert!(matches!(taker_cfd.state, CfdState::ContractSetup { .. }));
+    assert!(matches!(maker_cfd.state, CfdState::ContractSetup { .. }));
+
+    mock_wallet_sign_and_broadcast(&mut maker.mocks.wallet().await);
+    mock_wallet_sign_and_broadcast(&mut taker.mocks.wallet().await);
+
+    let (taker_cfd, maker_cfd) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    // TODO: More elaborate Cfd assertions
+    assert_eq!(taker_cfd.order.id, received.id);
+    assert_eq!(maker_cfd.order.id, received.id);
+    assert!(matches!(taker_cfd.state, CfdState::PendingOpen { .. }));
+    assert!(matches!(maker_cfd.state, CfdState::PendingOpen { .. }));
+
+    maker.cfd_actor_addr.send(monitor::Event::LockFinality(maker_cfd.order.id)).await.unwrap();
+    taker.cfd_actor_addr.send(monitor::Event::LockFinality(taker_cfd.order.id)).await.unwrap();
+
+    dbg!("sent lock finality event to cfd actor");
+
+    let (taker_cfd_open_state, maker_cfd_open_state) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+
+    dbg!("trying to retrieve the cfd in open state");
+
+    assert!(matches!(taker_cfd_open_state.state, CfdState::Open { .. }));
+    assert!(matches!(maker_cfd_open_state.state, CfdState::Open { .. }));
+
+    dbg!("retrieved what we beleive to be the cfd in open state");
+
+    taker.propose_rollover(taker_cfd.order.id).await;
+    dbg!("proposed roll over");
+    maker.accept_rollover(maker_cfd.order.clone()).await;
+
+    dbg!("accepted roll over");
+    //
+    // let (taker_cfd_rolled_over, maker_cfd_rolled_over) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    //
+    // assert!(matches!(taker_cfd_rolled_over.state, CfdState::Open{ .. }));
+    // assert!(matches!(maker_cfd_rolled_over.state, CfdState::Open { .. }));
+    //
+    // assert_ne!(taker_cfd_rolled_over.state.get_transition_timestamp(), taker_cfd_rolled_over.state.get_transition_timestamp());
+
+    // punish key only acquired after rollover
+    // assert that tx commit has changed
+
+    // let taker_order = next_some(&mut taker.order_feed).await;
+    // let maker_order= next_some(&mut maker.order_feed).await;
+
+    // assert_is_same_order(&taker_order, &received);
+    // assert_is_same_order(&maker_order, &received);
+
+
+}
+
 
 // Helper function setting up a "happy path" wallet mock
 fn mock_wallet_sign_and_broadcast(wallet: &mut MutexGuard<'_, harness::mocks::wallet::MockWallet>) {
@@ -87,7 +224,7 @@ fn mock_wallet_sign_and_broadcast(wallet: &mut MutexGuard<'_, harness::mocks::wa
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "expensive_tests"), ignore)]
+// #[cfg_attr(not(feature = "expensive_tests"), ignore)]
 async fn taker_takes_order_and_maker_accepts_and_contract_setup() {
     let _guard = init_tracing();
     let (mut maker, mut taker) = start_both().await;
@@ -98,7 +235,7 @@ async fn taker_takes_order_and_maker_accepts_and_contract_setup() {
 
     let (_, received) = next_order(&mut maker.order_feed, &mut taker.order_feed).await;
 
-    taker.take_order(received.clone(), Usd::new(dec!(5)));
+    taker.take_order(received.clone(), Usd::new(dec!(5))).await;
     let (_, _) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
 
     maker
@@ -115,7 +252,7 @@ async fn taker_takes_order_and_maker_accepts_and_contract_setup() {
         .expect_get_announcement()
         .returning(|_| Some(dummy_announcement()));
 
-    maker.accept_take_request(received.clone());
+    maker.accept_take_request(received.clone()).await;
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
     maker
