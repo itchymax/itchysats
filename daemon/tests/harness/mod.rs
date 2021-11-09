@@ -3,7 +3,7 @@ use crate::harness::mocks::oracle::OracleActor;
 use crate::harness::mocks::wallet::WalletActor;
 use crate::schnorrsig;
 use daemon::maker_cfd::CfdAction;
-use daemon::model::cfd::{Cfd, Order, OrderId};
+use daemon::model::cfd::{Cfd, Order, OrderId, UpdateCfdProposals};
 use daemon::model::Usd;
 use daemon::seed::Seed;
 use daemon::{connection, db, maker_cfd, maker_inc_connections, taker_cfd};
@@ -38,6 +38,7 @@ pub struct Maker {
     >,
     pub order_feed: watch::Receiver<Option<Order>>,
     pub cfd_feed: watch::Receiver<Vec<Cfd>>,
+    pub update_proposals: watch::Receiver<UpdateCfdProposals>,
     #[allow(dead_code)] // we need to keep the xtra::Address for refcounting
     pub inc_conn_actor_addr: xtra::Address<maker_inc_connections::Actor>,
     pub listen_addr: SocketAddr,
@@ -102,6 +103,7 @@ impl Maker {
             cfd_actor_addr: maker.cfd_actor_addr,
             order_feed: maker.order_feed_receiver,
             cfd_feed: maker.cfd_feed_receiver,
+            update_proposals: maker.update_cfd_feed_receiver,
             inc_conn_actor_addr: maker.inc_conn_addr,
             listen_addr: address,
             noise_static_pk,
@@ -148,6 +150,7 @@ pub struct Taker {
     pub order_feed: watch::Receiver<Option<Order>>,
     pub cfd_feed: watch::Receiver<Vec<Cfd>>,
     pub cfd_actor_addr: xtra::Address<taker_cfd::Actor<OracleActor, MonitorActor, WalletActor>>,
+    pub update_proposals: watch::Receiver<UpdateCfdProposals>,
     pub mocks: mocks::Mocks,
 }
 
@@ -195,6 +198,7 @@ impl Taker {
             order_feed: taker.order_feed_receiver,
             cfd_feed: taker.cfd_feed_receiver,
             cfd_actor_addr: taker.cfd_actor_addr,
+            update_proposals: taker.update_cfd_feed_receiver,
             mocks,
         }
     }
