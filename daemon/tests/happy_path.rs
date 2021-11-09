@@ -3,10 +3,10 @@ use crate::harness::mocks::oracle::dummy_announcement;
 use crate::harness::mocks::wallet::build_party_params;
 use crate::harness::start_both;
 use anyhow::Context;
-use daemon::{maker_cfd, monitor};
 use daemon::model::cfd::{Cfd, CfdState, Order, Origin};
 use daemon::model::{Price, Usd};
 use daemon::tokio_ext::FutureExt;
+use daemon::{maker_cfd, monitor};
 use harness::bdk::dummy_tx_id;
 use maia::secp256k1_zkp::schnorrsig;
 use rust_decimal_macros::dec;
@@ -92,7 +92,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .returning(|_| Some(dummy_announcement()));
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        maker
+    maker
         .mocks
         .wallet()
         .await
@@ -100,7 +100,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .returning(|msg| build_party_params(msg));
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        taker
+    taker
         .mocks
         .wallet()
         .await
@@ -108,7 +108,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .returning(|msg| build_party_params(msg));
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        maker
+    maker
         .mocks
         .oracle()
         .await
@@ -116,7 +116,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .return_const(());
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        taker
+    taker
         .mocks
         .oracle()
         .await
@@ -124,7 +124,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .return_const(());
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        maker
+    maker
         .mocks
         .monitor()
         .await
@@ -132,13 +132,12 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
         .return_const(());
 
     #[allow(clippy::redundant_closure)] // clippy is in the wrong here
-        taker
+    taker
         .mocks
         .monitor()
         .await
         .expect_start_monitoring()
         .return_const(());
-
 
     is_next_none(&mut taker.order_feed).await;
 
@@ -168,12 +167,21 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
     assert!(matches!(taker_cfd.state, CfdState::PendingOpen { .. }));
     assert!(matches!(maker_cfd.state, CfdState::PendingOpen { .. }));
 
-    maker.cfd_actor_addr.send(monitor::Event::LockFinality(maker_cfd.order.id)).await.unwrap();
-    taker.cfd_actor_addr.send(monitor::Event::LockFinality(taker_cfd.order.id)).await.unwrap();
+    maker
+        .cfd_actor_addr
+        .send(monitor::Event::LockFinality(maker_cfd.order.id))
+        .await
+        .unwrap();
+    taker
+        .cfd_actor_addr
+        .send(monitor::Event::LockFinality(taker_cfd.order.id))
+        .await
+        .unwrap();
 
     dbg!("sent lock finality event to cfd actor");
 
-    let (taker_cfd_open_state, maker_cfd_open_state) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    let (taker_cfd_open_state, maker_cfd_open_state) =
+        next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
 
     dbg!("trying to retrieve the cfd in open state");
 
@@ -188,12 +196,14 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
 
     dbg!("accepted roll over");
     //
-    // let (taker_cfd_rolled_over, maker_cfd_rolled_over) = next_cfd(&mut taker.cfd_feed, &mut maker.cfd_feed).await;
+    // let (taker_cfd_rolled_over, maker_cfd_rolled_over) = next_cfd(&mut taker.cfd_feed, &mut
+    // maker.cfd_feed).await;
     //
     // assert!(matches!(taker_cfd_rolled_over.state, CfdState::Open{ .. }));
     // assert!(matches!(maker_cfd_rolled_over.state, CfdState::Open { .. }));
     //
-    // assert_ne!(taker_cfd_rolled_over.state.get_transition_timestamp(), taker_cfd_rolled_over.state.get_transition_timestamp());
+    // assert_ne!(taker_cfd_rolled_over.state.get_transition_timestamp(),
+    // taker_cfd_rolled_over.state.get_transition_timestamp());
 
     // punish key only acquired after rollover
     // assert that tx commit has changed
@@ -203,10 +213,7 @@ async fn taker_proposes_rollover_and_maker_accepts_rollover() {
 
     // assert_is_same_order(&taker_order, &received);
     // assert_is_same_order(&maker_order, &received);
-
-
 }
-
 
 // Helper function setting up a "happy path" wallet mock
 fn mock_wallet_sign_and_broadcast(wallet: &mut MutexGuard<'_, harness::mocks::wallet::MockWallet>) {

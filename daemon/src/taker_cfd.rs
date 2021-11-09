@@ -377,7 +377,6 @@ where
             })?;
         dbg!("sent roll over proposals to maker");
 
-
         Ok(())
     }
 }
