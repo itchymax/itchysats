@@ -10,7 +10,7 @@ use daemon::model::WalletInfo;
 use daemon::seed::Seed;
 use daemon::{
     bitmex_price_feed, housekeeping, logger, maker_cfd, maker_inc_connections, monitor, oracle,
-    wallet, wallet_sync, MakerActorSystem,
+    wallet, wallet_sync, MakerActorSystem, SETTLEMENT_INTERVAL,
 };
 
 use sqlx::sqlite::SqliteConnectOptions;
@@ -51,10 +51,6 @@ struct Opts {
     /// If enabled logs will be in json format
     #[clap(short, long)]
     json: bool,
-
-    /// The time interval until potential settlement of each CFD in hours
-    #[clap(long, default_value = "24")]
-    settlement_time_interval_hours: u8,
 
     #[clap(subcommand)]
     network: Network,
@@ -249,8 +245,6 @@ async fn main() -> Result<()> {
     housekeeping::transition_non_continue_cfds_to_setup_failed(&mut conn).await?;
     housekeeping::rebroadcast_transactions(&mut conn, &wallet).await?;
 
-    let settlement_time_interval_hours =
-        time::Duration::hours(opts.settlement_time_interval_hours as i64);
     let MakerActorSystem {
         cfd_actor_addr,
         cfd_feed_receiver,
@@ -261,7 +255,7 @@ async fn main() -> Result<()> {
         db.clone(),
         wallet.clone(),
         oracle,
-        |cfds, channel| oracle::Actor::new(cfds, channel, settlement_time_interval_hours),
+        |cfds, channel| oracle::Actor::new(cfds, channel, SETTLEMENT_INTERVAL),
         {
             |channel, cfds| {
                 let electrum = opts.network.electrum().to_string();
@@ -269,7 +263,7 @@ async fn main() -> Result<()> {
             }
         },
         |channel0, channel1| maker_inc_connections::Actor::new(channel0, channel1, noise_static_sk),
-        time::Duration::hours(opts.settlement_time_interval_hours as i64),
+        SETTLEMENT_INTERVAL,
     )
     .await?;
 

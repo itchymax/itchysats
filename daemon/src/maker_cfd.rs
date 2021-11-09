@@ -60,7 +60,7 @@ pub struct FromTaker {
 pub struct Actor<O, M, T, W> {
     db: sqlx::SqlitePool,
     wallet: Address<W>,
-    settlement_time_interval_hours: Duration,
+    settlement_interval: Duration,
     oracle_pk: schnorrsig::PublicKey,
     cfd_feed_actor_inbox: watch::Sender<Vec<Cfd>>,
     order_feed_sender: watch::Sender<Option<Order>>,
@@ -97,7 +97,7 @@ impl<O, M, T, W> Actor<O, M, T, W> {
     pub fn new(
         db: sqlx::SqlitePool,
         wallet: Address<W>,
-        settlement_time_interval_hours: Duration,
+        settlement_interval: Duration,
         oracle_pk: schnorrsig::PublicKey,
         cfd_feed_actor_inbox: watch::Sender<Vec<Cfd>>,
         order_feed_sender: watch::Sender<Option<Order>>,
@@ -109,7 +109,7 @@ impl<O, M, T, W> Actor<O, M, T, W> {
         Self {
             db,
             wallet,
-            settlement_time_interval_hours,
+            settlement_interval,
             oracle_pk,
             cfd_feed_actor_inbox,
             order_feed_sender,
@@ -636,7 +636,7 @@ where
         max_quantity: Usd,
     ) -> Result<()> {
         let oracle_event_id = oracle::next_announcement_after(
-            time::OffsetDateTime::now_utc() + self.settlement_time_interval_hours,
+            time::OffsetDateTime::now_utc() + self.settlement_interval,
         )?;
 
         let order = Order::new(
@@ -645,7 +645,7 @@ where
             max_quantity,
             Origin::Ours,
             oracle_event_id,
-            self.settlement_time_interval_hours,
+            self.settlement_interval,
         )?;
 
         // 1. Save to DB
@@ -767,7 +767,7 @@ where
         let dlc = cfd.open_dlc().context("CFD was in wrong state")?;
 
         let oracle_event_id = oracle::next_announcement_after(
-            time::OffsetDateTime::now_utc() + cfd.order.settlement_time_interval_hours,
+            time::OffsetDateTime::now_utc() + cfd.order.settlement_interval,
         )?;
         let announcement = self
             .oracle_actor

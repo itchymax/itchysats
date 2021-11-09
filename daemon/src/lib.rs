@@ -46,6 +46,8 @@ pub mod wallet;
 pub mod wallet_sync;
 pub mod wire;
 
+pub const SETTLEMENT_INTERVAL: time::Duration = time::Duration::hours(24);
+
 pub struct MakerActorSystem<O, M, T, W> {
     pub cfd_actor_addr: Address<maker_cfd::Actor<O, M, T, W>>,
     pub cfd_feed_receiver: watch::Receiver<Vec<Cfd>>,
@@ -80,7 +82,7 @@ where
             Box<dyn MessageChannel<NewTakerOnline>>,
             Box<dyn MessageChannel<FromTaker>>,
         ) -> T,
-        settlement_time_interval_hours: time::Duration,
+        settlement_interval: time::Duration,
     ) -> Result<Self>
     where
         F: Future<Output = Result<M>>,
@@ -101,7 +103,7 @@ where
         let cfd_actor_addr = maker_cfd::Actor::new(
             db,
             wallet_addr,
-            settlement_time_interval_hours,
+            settlement_interval,
             oracle_pk,
             cfd_feed_sender,
             order_feed_sender,

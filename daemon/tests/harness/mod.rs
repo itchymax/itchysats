@@ -60,7 +60,7 @@ impl Maker {
 
         let wallet_addr = wallet.create(None).spawn_global();
 
-        let settlement_time_interval_hours = time::Duration::hours(24);
+        let settlement_interval = time::Duration::hours(24);
 
         let seed = Seed::default();
 
@@ -76,7 +76,7 @@ impl Maker {
             |channel0, channel1| {
                 maker_inc_connections::Actor::new(channel0, channel1, noise_static_sk)
             },
-            settlement_time_interval_hours,
+            settlement_interval,
         )
         .await
         .unwrap();

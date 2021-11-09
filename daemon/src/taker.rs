@@ -8,7 +8,7 @@ use daemon::model::WalletInfo;
 use daemon::seed::Seed;
 use daemon::{
     bitmex_price_feed, connection, housekeeping, logger, monitor, oracle, taker_cfd, wallet,
-    wallet_sync, TakerActorSystem,
+    wallet_sync, TakerActorSystem, SETTLEMENT_INTERVAL,
 };
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
@@ -22,8 +22,6 @@ use xtra::spawn::TokioGlobalSpawnExt;
 use xtra::Actor;
 
 mod routes_taker;
-
-pub const ANNOUNCEMENT_LOOKAHEAD: time::Duration = time::Duration::hours(24);
 
 #[derive(Parser)]
 struct Opts {
@@ -243,7 +241,7 @@ async fn main() -> Result<()> {
         oracle,
         send_to_maker,
         read_from_maker,
-        |cfds, channel| oracle::Actor::new(cfds, channel, ANNOUNCEMENT_LOOKAHEAD),
+        |cfds, channel| oracle::Actor::new(cfds, channel, SETTLEMENT_INTERVAL),
         {
             |channel, cfds| {
                 let electrum = opts.network.electrum().to_string();
