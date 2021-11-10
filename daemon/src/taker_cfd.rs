@@ -65,6 +65,11 @@ enum RollOverState {
     None,
 }
 
+pub struct RollOverParams {
+    pub settlement_interval: Duration,
+    pub rollover_offset: Duration,
+}
+
 pub struct Actor<O, M, W> {
     db: sqlx::SqlitePool,
     wallet: Address<W>,
@@ -78,7 +83,7 @@ pub struct Actor<O, M, W> {
     roll_over_state: RollOverState,
     oracle_actor: Address<O>,
     current_pending_proposals: UpdateCfdProposals,
-    settlement_interval: Duration,
+    roll_over_params: RollOverParams,
 }
 
 impl<O, M, W> Actor<O, M, W>
@@ -99,7 +104,7 @@ where
         send_to_maker: Box<dyn MessageChannel<wire::TakerToMaker>>,
         monitor_actor: Address<M>,
         oracle_actor: Address<O>,
-        settlement_interval: Duration,
+        roll_over_params: RollOverParams,
     ) -> Self {
         Self {
             db,
@@ -114,7 +119,7 @@ where
             roll_over_state: RollOverState::None,
             oracle_actor,
             current_pending_proposals: HashMap::new(),
-            settlement_interval,
+            roll_over_params,
         }
     }
 }
@@ -190,7 +195,8 @@ impl<O, M, W> Actor<O, M, W> {
         {
             let now = OffsetDateTime::now_utc();
             let until_expiry = now - cfd.expiry_timestamp();
-            let roll_over_window = self.settlement_interval - Duration::hours(1);
+            let roll_over_window =
+                self.roll_over_params.settlement_interval - self.roll_over_params.rollover_offset;
 
             if until_expiry <= roll_over_window && until_expiry > Duration::ZERO {
                 try_continue!(self.propose_roll_over(cfd.order.id).await)

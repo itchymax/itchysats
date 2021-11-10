@@ -6,11 +6,13 @@ use daemon::maker_cfd::CfdAction;
 use daemon::model::cfd::{Cfd, Order, OrderId, UpdateCfdProposals};
 use daemon::model::Usd;
 use daemon::seed::Seed;
+use daemon::taker_cfd::RollOverParams;
 use daemon::{connection, db, maker_cfd, maker_inc_connections, taker_cfd};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::task::Poll;
+use time::Duration;
 use tokio::sync::watch;
 use xtra::spawn::TokioGlobalSpawnExt;
 use xtra::Actor;
@@ -192,7 +194,10 @@ impl Taker {
             read_from_maker,
             |_, _| oracle,
             |_, _| async { Ok(monitor) },
-            settlement_time_interval_hours,
+            RollOverParams {
+                settlement_interval: settlement_time_interval_hours,
+                rollover_offset: Duration::hours(1),
+            },
         )
         .await
         .unwrap();

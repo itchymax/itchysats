@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use daemon::db::{self};
 use daemon::model::WalletInfo;
 use daemon::seed::Seed;
+use daemon::taker_cfd::RollOverParams;
 use daemon::{
     bitmex_price_feed, connection, housekeeping, logger, monitor, oracle, taker_cfd, wallet,
     wallet_sync, TakerActorSystem, SETTLEMENT_INTERVAL,
@@ -15,6 +16,7 @@ use sqlx::SqlitePool;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use time::Duration;
 use tokio::sync::watch;
 use tracing_subscriber::filter::LevelFilter;
 use xtra::prelude::MessageChannel;
@@ -248,7 +250,10 @@ async fn main() -> Result<()> {
                 monitor::Actor::new(electrum, channel, cfds)
             }
         },
-        SETTLEMENT_INTERVAL,
+        RollOverParams {
+            settlement_interval: SETTLEMENT_INTERVAL,
+            rollover_offset: Duration::hours(1),
+        },
     )
     .await?;
 

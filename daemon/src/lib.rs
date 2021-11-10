@@ -3,6 +3,7 @@ use crate::db::load_all_cfds;
 use crate::maker_cfd::{FromTaker, NewTakerOnline};
 use crate::model::cfd::{Cfd, Order, UpdateCfdProposals};
 use crate::oracle::Attestation;
+use crate::taker_cfd::RollOverParams;
 use anyhow::Result;
 use futures::Stream;
 use maia::secp256k1_zkp::schnorrsig;
@@ -183,7 +184,7 @@ where
         read_from_maker: Box<dyn Stream<Item = taker_cfd::MakerStreamMessage> + Unpin + Send>,
         oracle_constructor: impl FnOnce(Vec<Cfd>, Box<dyn StrongMessageChannel<Attestation>>) -> O,
         monitor_constructor: impl FnOnce(Box<dyn StrongMessageChannel<monitor::Event>>, Vec<Cfd>) -> F,
-        settlement_interval: time::Duration,
+        roll_over_params: RollOverParams,
     ) -> Result<Self>
     where
         F: Future<Output = Result<M>>,
@@ -217,7 +218,7 @@ where
             send_to_maker,
             monitor_addr.clone(),
             oracle_addr,
-            settlement_interval,
+            roll_over_params,
         )));
 
         tokio::spawn(cfd_actor_addr.clone().attach_stream(read_from_maker));
